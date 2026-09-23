@@ -1,303 +1,124 @@
-import os
-import subprocess
 import cv2
-import imageio_ffmpeg as ffmpeg_bin
 import numpy as np
-from scipy.interpolate import splprep, splev
 import streamlit as st
-from filterpy.kalman import KalmanFilter
-from ultralytics import YOLO
+import tempfile
+import os
 
-st.set_page_config(page_title="Pro Golf Tracer AI", page_icon="⛳")
-st.title("⛳ Pro Golf Ball Tracer")
+def generate_bezier_points(p0, p1, p2, num_points=60):
+    """Calculates a smooth quadratic Bezier curve from start to finish."""
+    t = np.linspace(0, 1, num_points)
+    curve = []
+    for ti in t:
+        # B(t) = (1-t)^2 * P0 + 2(1-t)t * P1 + t^2 * P2
+        point = (1 - ti)**2 * p0 + 2 * (1 - ti) * ti * p1 + ti**2 * p2
+        curve.append((int(point[0]), int(point[1])))
+    return curve
 
+def process_video(video_path, impact_frame, flight_duration, impact_xy, apex_xy, landing_xy, line_color, line_thickness):
+    cap = cv2.VideoCapture(video_path)
+    
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-def init_kalman():
-    kf = KalmanFilter(dim_x=4, dim_z=2)
-    kf.x = np.array([0.0, 0.0, 0.0, 0.0])
-    kf.F = np.array([[1, 0, 1, 0], [0, 1, 0, 1], [0, 0, 1, 0], [0, 0, 0, 1]])
-    kf.H = np.array([[1, 0, 0, 0], [0, 1, 0, 0]])
-    kf.P *= 1000.0
-    kf.R = np.array([[5, 0], [0, 5]])
-    kf.Q = np.eye(4) * 0.05
-    return kf
+    # Prepare temporary output file
+    temp_output = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(temp_output.name, fourcc, fps, (width, height))
 
+    # Pre-calculate full shot trajectory points
+    curve_points = generate_bezier_points(impact_xy, apex_xy, landing_xy, num_points=flight_duration)
 
-@st.cache_resource
-def load_yolo():
-    return YOLO("yolov8n.pt")
+    frame_idx = 0
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
 
+        # Render tracer ONLY after impact occurs
+        if frame_idx >= impact_frame:
+            # Determine how much of the line to reveal based on current frame
+            elapsed_frames = frame_idx - impact_frame
+            points_to_draw = min(elapsed_frames + 1, len(curve_points))
 
-model = load_yolo()
+            if points_to_draw > 1:
+                active_pts = np.array(curve_points[:points_to_draw], dtype=np.int32)
+                
+                # Draw main tracer trajectory
+                cv2.polylines(frame, [active_pts], isClosed=False, color=line_color, thickness=line_thickness, lineType=cv2.LINE_AA)
+                
+                # Draw leading ball head at the front of the trace
+                current_ball_pos = curve_points[points_to_draw - 1]
+                cv2.circle(frame, current_ball_pos, line_thickness + 2, (255, 255, 255), -1)
 
+                # Add APEX indicator once the ball reaches peak trajectory
+                apex_index = len(curve_points) // 2
+                if points_to_draw >= apex_index:
+                    apex_pt = curve_points[apex_index]
+                    cv2.circle(frame, apex_pt, 6, (0, 255, 255), -1)
+                    cv2.putText(frame, "APEX", (apex_pt[0] - 20, apex_pt[1] - 15), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
 
-def get_color_mask(hsv, color):
-    if color == "White":
-        return cv2.inRange(
-            hsv, np.array([0, 0, 180]), np.array([180, 60, 255])
-        )
-    elif color == "Yellow":
-        return cv2.inRange(
-            hsv, np.array([20, 100, 100]), np.array([35, 255, 255])
-        )
-    elif color == "Pink":
-        return cv2.inRange(
-            hsv, np.array([140, 50, 100]), np.array([170, 255, 255])
-        )
-    return None
+        out.write(frame)
+        frame_idx += 1
 
+    cap.release()
+    out.release()
+    return temp_output.name
 
-def fit_bspline(points, num_points=100):
-    if len(points) < 4:
-        return points
+# ----------------- STREAMLIT UI -----------------
+st.title("⛳ Custom Golf Shot Tracer")
 
-    pts = np.array(points)
-    unique_mask = np.ones(len(pts), dtype=bool)
-    for i in range(1, len(pts)):
-        if np.linalg.norm(pts[i] - pts[i - 1]) < 2:
-            unique_mask[i] = False
-    pts = pts[unique_mask]
+uploaded_file = st.file_uploader("Upload Golf Swing Video", type=["mp4", "mov"])
 
-    if len(pts) < 4:
-        return points
+if uploaded_file:
+    tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    tfile.write(uploaded_file.read())
+    
+    cap = cv2.VideoCapture(tfile.name)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
 
-    try:
-        x, y = pts[:, 0], pts[:, 1]
-        tck, _ = splprep([x, y], s=30, k=min(3, len(pts) - 1))
-        u_new = np.linspace(0, 1, num_points)
-        x_new, y_new = splev(u_new, tck)
-        return list(zip(x_new.astype(int), y_new.astype(int)))
-    except Exception:
-        return points
+    st.subheader("1. Setup Timing & Coordinates")
+    
+    # Timing Sliders
+    impact_frame = st.slider("Impact Frame Number", 0, total_frames, int(total_frames * 0.35))
+    flight_duration = st.slider("Flight Duration (Frames)", 10, 120, 45)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**Impact Location (X, Y)**")
+        impact_x = st.slider("Impact X", 0, width, int(width * 0.5))
+        impact_y = st.slider("Impact Y", 0, height, int(height * 0.75))
 
+        st.markdown("**Apex Location (X, Y)**")
+        apex_x = st.slider("Apex X", 0, width, int(width * 0.25))
+        apex_y = st.slider("Apex Y", 0, height, int(height * 0.25))
 
-def draw_glow_line(
-    frame, pts, color_bgr=(0, 255, 255), thickness=3, apex_pt=None
-):
-    if len(pts) < 2:
-        return frame
+    with col2:
+        st.markdown("**Landing Location (X, Y)**")
+        landing_x = st.slider("Landing X", 0, width, int(width * 0.35))
+        landing_y = st.slider("Landing Y", 0, height, int(height * 0.45))
+        
+        line_thickness = st.slider("Tracer Thickness", 1, 10, 4)
 
-    pts_array = np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
+    # Convert RGB color picker to BGR for OpenCV
+    color_hex = st.color_picker("Tracer Color", "#00FF00")
+    bgr_color = tuple(int(color_hex.lstrip('#')[i:i+2], 16) for i in (4, 2, 0))
 
-    # Outer Glow Layer
-    overlay = frame.copy()
-    cv2.polylines(
-        overlay, [pts_array], isClosed=False, color=color_bgr, thickness=9
-    )
-    frame = cv2.addWeighted(overlay, 0.4, frame, 0.6, 0)
-
-    # Core Bright White Center Line
-    cv2.polylines(
-        frame,
-        [pts_array],
-        isClosed=False,
-        color=(255, 255, 255),
-        thickness=thickness,
-    )
-
-    # Apex Badge Overlay
-    if apex_pt:
-        ax, ay = apex_pt
-        cv2.circle(frame, (ax, ay), 5, color_bgr, -1)
-        cv2.circle(frame, (ax, ay), 7, (255, 255, 255), 2)
-        cv2.putText(
-            frame,
-            "APEX",
-            (ax - 18, ay - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            (255, 255, 255),
-            2,
-        )
-
-    return frame
-
-
-# --- UI CONTROLS ---
-col1, col2, col3 = st.columns(3)
-with col1:
-    ball_color = st.selectbox(
-        "Golf Ball Color", ["White", "Yellow", "Pink"], index=0
-    )
-
-with col2:
-    tracer_style = st.selectbox(
-        "Tracer Color", ["Neon Yellow", "Cyan", "Magenta"], index=0
-    )
-    color_map = {
-        "Neon Yellow": (0, 255, 255),
-        "Cyan": (255, 255, 0),
-        "Magenta": (255, 0, 255),
-    }
-
-with col3:
-    mode = st.radio(
-        "Impact Frame Mode", ["Manual Override", "Auto-Detect"], index=0
-    )
-    if mode == "Manual Override":
-        start_frame_offset = st.number_input(
-            "Impact Frame (e.g., Frame 60)", min_value=0, max_value=600, value=60
-        )
-    else:
-        start_frame_offset = 60  # Default fallback
-
-uploaded_file = st.file_uploader(
-    "Upload Golf Swing Video", type=["mp4", "mov", "avi"]
-)
-
-if uploaded_file is not None:
-    input_path = "temp_input.mp4"
-    with open(input_path, "wb") as f:
-        f.write(uploaded_file.read())
-
-    with st.status("Processing Golf Swing...", expanded=True) as status:
-        cap = cv2.VideoCapture(input_path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
-
-        temp_output = "temp_traced.mp4"
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(temp_output, fourcc, fps, (width, height))
-
-        status.write(
-            f"🚀 Processing from **Frame {start_frame_offset}** onwards..."
-        )
-        progress_bar = st.progress(0, text="Reading frames...")
-
-        kf = init_kalman()
-        raw_tracked_points = []
-        kalman_initialized = False
-        current_frame = 0
-
-        # Pass 1: Collect coordinates ONLY AFTER impact frame
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            current_frame += 1
-
-            if current_frame >= start_frame_offset:
-                hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-                mask = get_color_mask(hsv, ball_color)
-
-                results = model.predict(source=frame, conf=0.08, verbose=False)
-                ball_found = False
-                detected_x, detected_y = 0, 0
-
-                for r in results:
-                    for box in r.boxes:
-                        x1, y1, x2, y2 = box.xyxy[0].tolist()
-                        w, h = x2 - x1, y2 - y1
-
-                        if 2 <= w <= 45 and 2 <= h <= 45:
-                            cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
-
-                            if mask[cy, cx] > 0:
-                                detected_x, detected_y = cx, cy
-                                ball_found = True
-                                break
-
-                if ball_found:
-                    if not kalman_initialized:
-                        kf.x = np.array(
-                            [detected_x, detected_y, 0, 0], dtype=float
-                        )
-                        kalman_initialized = True
-
-                    kf.predict()
-                    kf.update(np.array([detected_x, detected_y]))
-                    raw_tracked_points.append((int(kf.x[0]), int(kf.x[1])))
-                else:
-                    if kalman_initialized and len(raw_tracked_points) > 2:
-                        kf.predict()
-                        kf.x[3] += 0.85  # Gravity force simulation
-                        px, py = int(kf.x[0]), int(kf.x[1])
-
-                        if 0 <= px < width and 0 <= py < height:
-                            raw_tracked_points.append((px, py))
-
-        cap.release()
-
-        # Pass 2: Fit B-Spline curve across trajectory
-        smoothed_points = fit_bspline(raw_tracked_points, num_points=100)
-
-        # Identify Apex
-        apex_point = None
-        if len(smoothed_points) > 0:
-            apex_idx = np.argmin([p[1] for p in smoothed_points])
-            apex_point = smoothed_points[apex_idx]
-
-        # Pass 3: Render video (Do NOT draw anything before impact)
-        cap = cv2.VideoCapture(input_path)
-        render_frame = 0
-
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            render_frame += 1
-
-            # ONLY draw tracer if render_frame has reached or passed start_frame_offset
-            if render_frame >= start_frame_offset and len(smoothed_points) > 1:
-                frames_since_impact = render_frame - start_frame_offset
-                flight_duration = max(1, total_frames - start_frame_offset)
-
-                # Reveal line progressively as time passes
-                progress_ratio = min(
-                    frames_since_impact / flight_duration, 1.0
-                )
-                visible_count = max(
-                    2, int(progress_ratio * len(smoothed_points))
-                )
-                current_pts = smoothed_points[:visible_count]
-
-                show_apex = (
-                    apex_point if visible_count >= len(smoothed_points) // 2 else None
-                )
-                frame = draw_glow_line(
-                    frame,
-                    current_pts,
-                    color_bgr=color_map[tracer_style],
-                    apex_pt=show_apex,
-                )
-
-            out.write(frame)
-
-            if total_frames > 0 and render_frame % 5 == 0:
-                percent = min(render_frame / total_frames, 1.0)
-                progress_bar.progress(
-                    percent,
-                    text=f"Rendering frame {render_frame}/{total_frames}",
-                )
-
-        cap.release()
-        out.release()
-
-        status.write("🎬 Transcoding to web format...")
-        final_output = "final_traced_h264.mp4"
-        ffmpeg_exe = ffmpeg_bin.get_ffmpeg_exe()
-        cmd = [
-            ffmpeg_exe,
-            "-y",
-            "-i",
-            temp_output,
-            "-vcodec",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            final_output,
-        ]
-        subprocess.run(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-
-        status.update(
-            label="Tracing Complete!", state="complete", expanded=False
-        )
-
-    st.success("Traced video ready!")
-    st.video(final_output)
+    if st.button("Generate Traced Video"):
+        with st.spinner("Processing trajectory..."):
+            output_path = process_video(
+                tfile.name,
+                impact_frame,
+                flight_duration,
+                (impact_x, impact_y),
+                (apex_x, apex_y),
+                (landing_x, landing_y),
+                bgr_color,
+                line_thickness
+            )
+            st.video(output_path)

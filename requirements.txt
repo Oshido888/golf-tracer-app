@@ -3,4 +3,5 @@ opencv-python-headless
 ultralytics
 filterpy
 numpy
+scipy
 imageio-ffmpeg

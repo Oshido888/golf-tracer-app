@@ -4,3 +4,4 @@ ultralytics
 filterpy
 scipy
 numpy
+ffmpeg-python

@@ -1,3 +1,5 @@
+import os
+import subprocess
 import cv2
 import numpy as np
 import streamlit as st
@@ -6,9 +8,6 @@ from ultralytics import YOLO
 
 st.set_page_config(page_title="Golf Ball Tracer", page_icon="⛳")
 st.title("⛳ Golf Ball Tracer")
-st.write(
-    "Upload a golf swing clip. The AI and physics filter will track the ball flight even against bright skies."
-)
 
 
 def init_kalman():
@@ -38,37 +37,28 @@ if uploaded_file is not None:
     with open(input_path, "wb") as f:
         f.write(uploaded_file.read())
 
-    cap = cv2.VideoCapture(input_path)
+    st.info("Processing frames... Please wait.")
 
-    # Get video frame count and properties
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap = cv2.VideoCapture(input_path)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
 
-    output_path = "traced_output.mp4"
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    temp_output = "temp_raw_output.mp4"
+    final_h264_output = "traced_h264.mp4"
 
-    # --- UI PROGRESS BAR & STATUS TEXT ---
-    st.write("---")
-    status_text = st.empty()
-    progress_bar = st.progress(0)
-    status_text.text("Initializing AI Model & Physics Engine...")
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(temp_output, fourcc, fps, (width, height))
 
     kf = init_kalman()
     tracked_points = []
     kalman_initialized = False
-    current_frame = 0
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
 
-        current_frame += 1
-
-        # Run AI detection
         results = model.predict(source=frame, conf=0.15, verbose=False)
 
         ball_found = False
@@ -115,19 +105,21 @@ if uploaded_file is not None:
 
         out.write(frame)
 
-        # UPDATE PROGRESS BAR
-        if total_frames > 0:
-            percent_complete = min(current_frame / total_frames, 1.0)
-            progress_bar.progress(percent_complete)
-            status_text.text(
-                f"Processing frame {current_frame} of {total_frames} ({int(percent_complete * 100)}%)"
-            )
-
     cap.release()
     out.release()
 
-    # Clear progress bar and display final video
-    progress_bar.empty()
-    status_text.empty()
+    # Convert to web-compatible H.264 video format using ffmpeg
+    st.info("Encoding video for mobile browser display...")
+    if os.path.exists(final_h264_output):
+        os.remove(final_h264_output)
+
+    subprocess.call(
+        f"ffmpeg -y -i {temp_output} -vcodec libx264 {final_h264_output}".split()
+    )
+
     st.success("Tracing complete!")
-    st.video(output_path)
+
+    # Open converted file as binary bytes for reliable rendering
+    with open(final_h264_output, "rb") as video_file:
+        video_bytes = video_file.read()
+        st.video(video_bytes)

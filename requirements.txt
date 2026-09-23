@@ -2,6 +2,5 @@ streamlit
 opencv-python-headless
 ultralytics
 filterpy
-scipy
 numpy
-ffmpeg-python
+imageio-ffmpeg

@@ -1,9 +1,10 @@
+import os
+import subprocess
 import tempfile
 import cv2
 import numpy as np
-from PIL import Image
 import streamlit as st
-from streamlit_image_coordinates import streamlit_image_coordinates
+import streamlit.components.v1 as components
 
 st.set_page_config(
     page_title="Golf Tracer", 
@@ -11,17 +12,13 @@ st.set_page_config(
     layout="centered"
 )
 
-# Custom mobile/PC friendly compact layout
+# Custom mobile layout styling
 st.markdown("""
     <style>
     .block-container {
         padding-top: 1rem;
         padding-bottom: 1rem;
-        max-width: 450px;
-    }
-    div[data-testid="stImage"] {
-        display: flex;
-        justify-content: center;
+        max-width: 460px;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -31,19 +28,16 @@ st.title("⛳ Visual Golf Tracer")
 uploaded_file = st.file_uploader("Upload Golf Swing", type=["mp4", "mov", "avi"])
 
 if uploaded_file:
-    # 1. Save uploaded video to temp file
+    # 1. Save uploaded video file
     if "video_path" not in st.session_state or st.session_state.get("file_name") != uploaded_file.name:
         tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         tfile.write(uploaded_file.read())
         st.session_state.video_path = tfile.name
         st.session_state.file_name = uploaded_file.name
-        # Clear old session data
-        st.session_state.pop("frames_cache", None)
-        st.session_state.pop("target_point", None)
 
     video_path = st.session_state.video_path
 
-    # Read Video Info
+    # Read video properties
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
@@ -51,158 +45,269 @@ if uploaded_file:
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
 
-    DISPLAY_WIDTH = 360
+    # Convert video to base64 data URL so mobile HTML video element can play/scrub locally
+    with open(video_path, "rb") as vf:
+        video_bytes = vf.read()
+    
+    import base64
+    b64_video = base64.b64encode(video_bytes).decode('utf-8')
+    video_data_url = f"data:video/mp4;base64,{b64_video}"
 
-    # 2. Fast Frame Extraction Helper
-    def get_frame(frame_idx):
-        cap = cv2.VideoCapture(video_path)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-        ret, f = cap.read()
-        cap.release()
-        if ret:
-            return cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
-        return None
+    DISPLAY_WIDTH = 380
+    aspect_ratio = height / width
+    DISPLAY_HEIGHT = int(DISPLAY_WIDTH * aspect_ratio)
 
-    # Initialize State Defaults
-    if "impact_frame" not in st.session_state:
-        st.session_state.impact_frame = min(15, total_frames)
+    # 2. NATIVE IPHONE-STYLE SCRUBBER & CANVAS (HTML5/JS)
+    custom_scrubber_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            body {{
+                margin: 0;
+                font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+                background: transparent;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+            }}
+            .video-container {{
+                position: relative;
+                width: {DISPLAY_WIDTH}px;
+                height: {DISPLAY_HEIGHT}px;
+                border-radius: 12px;
+                overflow: hidden;
+                background: #000;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            }}
+            video {{
+                width: 100%;
+                height: 100%;
+                object-fit: contain;
+                display: block;
+            }}
+            canvas {{
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                cursor: crosshair;
+            }}
+            .controls {{
+                width: {DISPLAY_WIDTH}px;
+                margin-top: 10px;
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+            }}
+            .slider-header {{
+                display: flex;
+                justify-content: space-between;
+                font-size: 13px;
+                font-weight: 600;
+                color: #444;
+            }}
+            input[type=range] {{
+                width: 100%;
+                accent-color: #007AFF;
+                height: 6px;
+                cursor: pointer;
+            }}
+        </style>
+    </head>
+    <body>
 
-    # 3. ISOLATED UI FRAGMENT (Prevents full page reloads on slider move)
-    @st.fragment
-    def render_scrubber():
-        # Get active frame
-        curr_frame_idx = st.session_state.impact_frame - 1
-        frame_rgb = get_frame(curr_frame_idx)
+        <!-- VIDEO FRAME DISPLAY -->
+        <div class="video-container">
+            <video id="vPlayer" playsinline muted preload="auto">
+                <source src="{video_data_url}" type="video/mp4">
+            </video>
+            <canvas id="overlayCanvas" width="{DISPLAY_WIDTH}" height="{DISPLAY_HEIGHT}"></canvas>
+        </div>
 
-        if frame_rgb is not None:
-            pil_img = Image.fromarray(frame_rgb)
+        <!-- SMOOTH SLIDER BELOW VIDEO FRAME -->
+        <div class="controls">
+            <div class="slider-header">
+                <span>Scrub Frame (iPhone Smooth)</span>
+                <span id="frameText">Frame 1 / {total_frames}</span>
+            </div>
+            <input type="range" id="scrubber" min="0" max="{total_frames - 1}" value="0" step="1">
+        </div>
 
-            # Draw persistent red target overlay on the frame if user tapped a ball point
-            if "target_point" in st.session_state and st.session_state.target_point is not None:
-                tx, ty = st.session_state.target_point
-                # Overlay target crosshair on copy of image
-                img_copy = frame_rgb.copy()
-                # Red Ring & Crosshair
-                cv2.circle(img_copy, (tx, ty), 12, (255, 0, 0), 2)
-                cv2.line(img_copy, (tx - 18, ty), (tx + 18, ty), (255, 0, 0), 2)
-                cv2.line(img_copy, (tx, ty - 18), (tx, ty + 18), (255, 0, 0), 2)
-                pil_img = Image.fromarray(img_copy)
+        <script>
+            const video = document.getElementById('vPlayer');
+            const scrubber = document.getElementById('scrubber');
+            const frameText = document.getElementById('frameText');
+            const canvas = document.getElementById('overlayCanvas');
+            const ctx = canvas.getContext('2d');
 
-            # A. DISPLAY VIDEO FRAME (ALWAYS FIRST)
-            click = streamlit_image_coordinates(
-                pil_img,
-                width=DISPLAY_WIDTH,
-                key=f"frame_click_{st.session_state.impact_frame}"
-            )
+            const totalFrames = {total_frames};
+            const fps = {fps};
+            const origWidth = {width};
+            const origHeight = {height};
+            const dispWidth = {DISPLAY_WIDTH};
 
-            # Handle Tap / Click on Ball
-            if click:
-                scale_factor = width / DISPLAY_WIDTH
-                real_x = int(click["x"] * scale_factor)
-                real_y = int(click["y"] * scale_factor)
-                st.session_state.target_point = (real_x, real_y)
-                st.rerun()
+            let selectedX = null;
+            let selectedY = null;
 
-            # B. FRAME SCRUBBER SLIDER (POSITIONED DIRECTLY BELOW VIDEO FRAME)
-            slider_val = st.slider(
-                f"Impact Frame ({st.session_state.impact_frame} / {total_frames})",
-                min_value=1,
-                max_value=total_frames,
-                value=st.session_state.impact_frame,
-                step=1,
-                key="impact_slider"
-            )
+            // Wait for video metadata to load
+            video.addEventListener('loadedmetadata', () => {{
+                video.currentTime = 0;
+            }});
 
-            if slider_val != st.session_state.impact_frame:
-                st.session_state.impact_frame = slider_val
-                st.rerun()
+            // 60 FPS SMOOTH SCRUBBING (Pure Browser JS)
+            scrubber.addEventListener('input', (e) => {{
+                const frameIdx = parseInt(e.target.value);
+                const targetTime = frameIdx / fps;
+                video.currentTime = targetTime;
+                frameText.innerText = 'Frame ' + (frameIdx + 1) + ' / ' + totalFrames;
+            }});
 
-    # Call Fragment UI
-    render_scrubber()
+            // TAP / CLICK ON GOLF BALL
+            canvas.addEventListener('click', (e) => {{
+                const rect = canvas.getBoundingClientRect();
+                selectedX = e.clientX - rect.left;
+                selectedY = e.clientY - rect.top;
 
-    # Feedback Status
-    if "target_point" in st.session_state and st.session_state.target_point is not None:
-        tx, ty = st.session_state.target_point
-        st.success(f"🎯 Target Locked at ({tx}, {ty}) on Frame {st.session_state.impact_frame}")
+                // Scale display coords to video resolution
+                const scale = origWidth / dispWidth;
+                const realX = Math.round(selectedX * scale);
+                const realY = Math.round(selectedY * scale);
+                const currentFrame = parseInt(scrubber.value) + 1;
 
-        # 4. RENDER BUTTON
-        if st.button("🚀 Render Flight Tracer", type="primary", use_container_width=True):
-            import subprocess
-            with st.spinner("Calculating flight arc & processing video..."):
-                flight_duration = int(fps * 1.5)
-                apex_x = int(tx - (width * 0.12))
-                apex_y = int(height * 0.22)
-                landing_x = int(apex_x - (width * 0.05))
-                landing_y = int(height * 0.45)
+                drawTarget(selectedX, selectedY);
 
-                p0 = np.array([tx, ty])
-                p1 = np.array([apex_x, apex_y])
-                p2 = np.array([landing_x, landing_y])
+                // Update hidden inputs in Streamlit UI
+                window.parent.postMessage({{
+                    type: 'GOLF_BALL_SELECTED',
+                    x: realX,
+                    y: realY,
+                    frame: currentFrame
+                }}, '*');
+            }});
 
-                t = np.linspace(0, 1, flight_duration)
-                curve_points = [
-                    (
-                        int((1 - ti) ** 2 * p0[0] + 2 * (1 - ti) * ti * p1[0] + ti**2 * p2[0]),
-                        int((1 - ti) ** 2 * p0[1] + 2 * (1 - ti) * ti * p1[1] + ti**2 * p2[1]),
-                    )
-                    for ti in t
-                ]
+            function drawTarget(x, y) {{
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                
+                // Red Circle Target
+                ctx.beginPath();
+                ctx.arc(x, y, 10, 0, 2 * Math.PI);
+                ctx.strokeStyle = '#FF3B30';
+                ctx.lineWidth = 3;
+                ctx.stroke();
 
-                cap = cv2.VideoCapture(video_path)
-                raw_temp = tempfile.NamedTemporaryFile(delete=False, suffix="_raw.mp4")
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                out = cv2.VideoWriter(raw_temp.name, fourcc, fps, (width, height))
+                // Crosshairs
+                ctx.beginPath();
+                ctx.moveTo(x - 16, y);
+                ctx.lineTo(x + 16, y);
+                ctx.moveTo(x, y - 16);
+                ctx.lineTo(x, y + 16);
+                ctx.strokeStyle = '#FF3B30';
+                ctx.lineWidth = 2;
+                ctx.stroke();
 
-                curr_idx = 0
-                while cap.isOpened():
-                    r_flag, f = cap.read()
-                    if not r_flag:
-                        break
+                // Center White Dot
+                ctx.beginPath();
+                ctx.arc(x, y, 3, 0, 2 * Math.PI);
+                ctx.fillStyle = '#FFFFFF';
+                ctx.fill();
+            }}
+        </script>
+    </body>
+    </html>
+    """
 
-                    if curr_idx >= (st.session_state.impact_frame - 1):
-                        elapsed = curr_idx - (st.session_state.impact_frame - 1)
-                        pts_count = min(elapsed + 1, len(curve_points))
+    # Embed HTML JS Scrubber
+    components.html(custom_scrubber_html, height=DISPLAY_HEIGHT + 70)
 
-                        if pts_count > 1:
-                            active_pts = np.array(curve_points[:pts_count], dtype=np.int32)
-                            cv2.polylines(
-                                f,
-                                [active_pts],
-                                isClosed=False,
-                                color=(0, 255, 0),
-                                thickness=4,
-                                lineType=cv2.LINE_AA,
-                            )
-                            cv2.circle(
-                                f,
-                                curve_points[pts_count - 1],
-                                6,
-                                (255, 255, 255),
-                                -1,
-                                cv2.LINE_AA,
-                            )
+    # 3. MANUAL / CONFIRMATION INPUTS (Guarantees Render Button is NEVER missing)
+    st.markdown("---")
+    st.subheader("🎯 Target Settings")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        cx = st.number_input("Target X", min_value=0, max_value=width, value=int(width * 0.5))
+    with col2:
+        cy = st.number_input("Target Y", min_value=0, max_value=height, value=int(height * 0.7))
+    with col3:
+        impact_frame = st.number_input("Impact Frame", min_value=1, max_value=total_frames, value=1)
 
-                    out.write(f)
-                    curr_idx += 1
+    # 4. ALWAYS-VISIBLE RENDER BUTTON
+    if st.button("🚀 Render Flight Tracer", type="primary", use_container_width=True):
+        with st.spinner("Calculating flight parabola & rendering output..."):
+            flight_duration = int(fps * 1.5)
+            apex_x = int(cx - (width * 0.12))
+            apex_y = int(height * 0.22)
+            landing_x = int(apex_x - (width * 0.05))
+            landing_y = int(height * 0.45)
 
-                cap.release()
-                out.release()
+            p0 = np.array([cx, cy])
+            p1 = np.array([apex_x, apex_y])
+            p2 = np.array([landing_x, landing_y])
 
-                # Transcode for browser/mobile compatibility
-                web_temp = tempfile.NamedTemporaryFile(delete=False, suffix="_web.mp4")
-                cmd = [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    raw_temp.name,
-                    "-vcodec",
-                    "libx264",
-                    "-pix_fmt",
-                    "yuv420p",
-                    web_temp.name,
-                ]
-                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            t = np.linspace(0, 1, flight_duration)
+            curve_points = [
+                (
+                    int((1 - ti) ** 2 * p0[0] + 2 * (1 - ti) * ti * p1[0] + ti**2 * p2[0]),
+                    int((1 - ti) ** 2 * p0[1] + 2 * (1 - ti) * ti * p1[1] + ti**2 * p2[1]),
+                )
+                for ti in t
+            ]
 
-                st.video(web_temp.name)
-    else:
-        st.info("👆 Tap on the golf ball in the frame above to set impact target.")
+            cap = cv2.VideoCapture(video_path)
+            raw_temp = tempfile.NamedTemporaryFile(delete=False, suffix="_raw.mp4")
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            out = cv2.VideoWriter(raw_temp.name, fourcc, fps, (width, height))
+
+            curr_idx = 0
+            while cap.isOpened():
+                r_flag, f = cap.read()
+                if not r_flag:
+                    break
+
+                if curr_idx >= (impact_frame - 1):
+                    elapsed = curr_idx - (impact_frame - 1)
+                    pts_count = min(elapsed + 1, len(curve_points))
+
+                    if pts_count > 1:
+                        active_pts = np.array(curve_points[:pts_count], dtype=np.int32)
+                        cv2.polylines(
+                            f,
+                            [active_pts],
+                            isClosed=False,
+                            color=(0, 255, 0),
+                            thickness=4,
+                            lineType=cv2.LINE_AA,
+                        )
+                        cv2.circle(
+                            f,
+                            curve_points[pts_count - 1],
+                            6,
+                            (255, 255, 255),
+                            -1,
+                            cv2.LINE_AA,
+                        )
+
+                out.write(f)
+                curr_idx += 1
+
+            cap.release()
+            out.release()
+
+            # Transcode with ffmpeg for browser playback
+            web_temp = tempfile.NamedTemporaryFile(delete=False, suffix="_web.mp4")
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                raw_temp.name,
+                "-vcodec",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                web_temp.name,
+            ]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            st.video(web_temp.name)

@@ -43,13 +43,23 @@ if uploaded_file:
     aspect_ratio = height / width
     DISPLAY_HEIGHT = int(DISPLAY_WIDTH * aspect_ratio)
 
+    # Check query parameters for tapped coordinates passed back from JS
+    query_params = st.query_params
+    
+    default_x0 = int(query_params.get("x0", int(width * 0.5)))
+    default_y0 = int(query_params.get("y0", int(height * 0.75)))
+    default_x1 = int(query_params.get("x1", int(width * 0.45)))
+    default_y1 = int(query_params.get("y1", int(height * 0.25)))
+    default_x2 = int(query_params.get("x2", int(width * 0.42)))
+    default_y2 = int(query_params.get("y2", int(height * 0.40)))
+
     with open(video_path, "rb") as vf:
         video_bytes = vf.read()
     
     b64_video = base64.b64encode(video_bytes).decode('utf-8')
     video_data_url = f"data:video/mp4;base64,{b64_video}"
 
-    # HTML Canvas with 3-Point Sequential Tap Preview matching Lagrange Curve
+    # HTML Canvas with JavaScript-to-Streamlit URL Parameter Sync
     custom_scrubber_html = f"""
     <!DOCTYPE html>
     <html>
@@ -123,7 +133,22 @@ if uploaded_file:
                 points.push({{ dispX: x, dispY: y, realX: realX, realY: realY }});
                 redraw();
                 updateStatus();
+
+                if (points.length === 3) {{
+                    syncWithPython();
+                }}
             }});
+
+            function syncWithPython() {{
+                const url = new URL(window.parent.location.href);
+                url.searchParams.set('x0', points[0].realX);
+                url.searchParams.set('y0', points[0].realY);
+                url.searchParams.set('x1', points[1].realX);
+                url.searchParams.set('y1', points[1].realY);
+                url.searchParams.set('x2', points[2].realX);
+                url.searchParams.set('y2', points[2].realY);
+                window.parent.history.replaceState({{}}, '', url.toString());
+            }}
 
             function resetPoints() {{
                 points = [];
@@ -142,7 +167,7 @@ if uploaded_file:
                     tapStatus.innerText = "Tap 3/3: Select LANDING / END point";
                     tapStatus.style.color = "#34C759";
                 }} else {{
-                    tapStatus.innerText = "✅ All 3 Points Set! Scroll down to render.";
+                    tapStatus.innerText = "✅ Points Synced! Scroll down and click Render.";
                     tapStatus.style.color = "#34C759";
                 }}
             }}
@@ -169,8 +194,6 @@ if uploaded_file:
 
                 if (points.length === 3) {{
                     ctx.beginPath();
-                    
-                    // Exact Lagrange Polynomial Preview
                     for (let t = 0; t <= 1; t += 0.02) {{
                         let L0 = ((t - 0.5) * (t - 1.0)) / ((0.0 - 0.5) * (0.0 - 1.0));
                         let L1 = ((t - 0.0) * (t - 1.0)) / ((0.5 - 0.0) * (0.5 - 1.0));
@@ -182,7 +205,6 @@ if uploaded_file:
                         if (t === 0) ctx.moveTo(px, py);
                         else ctx.lineTo(px, py);
                     }}
-
                     ctx.strokeStyle = '#34C759';
                     ctx.lineWidth = 3;
                     ctx.setLineDash([4, 4]);
@@ -206,27 +228,25 @@ if uploaded_file:
     with col2:
         tracer_speed = st.slider("Flight Duration (sec)", min_value=0.5, max_value=3.0, value=1.5, step=0.1)
 
-    st.caption("Coordinate Inputs (Auto-filled by tapping above):")
+    st.caption("Active Coordinates (Updated on tap):")
     c1, c2, c3 = st.columns(3)
     with c1:
-        x0 = st.number_input("Start X", value=int(width * 0.5))
-        y0 = st.number_input("Start Y", value=int(height * 0.75))
+        x0 = st.number_input("Start X", value=default_x0)
+        y0 = st.number_input("Start Y", value=default_y0)
     with c2:
-        x1 = st.number_input("Apex X", value=int(width * 0.45))
-        y1 = st.number_input("Apex Y", value=int(height * 0.25))
+        x1 = st.number_input("Apex X", value=default_x1)
+        y1 = st.number_input("Apex Y", value=default_y1)
     with c3:
-        x2 = st.number_input("End X", value=int(width * 0.42))
-        y2 = st.number_input("End Y", value=int(height * 0.40))
+        x2 = st.number_input("End X", value=default_x2)
+        y2 = st.number_input("End Y", value=default_y2)
 
     if st.button("🚀 Render 3-Tap Tracer", type="primary", use_container_width=True):
-        with st.spinner("Drawing parabolic trajectory & rendering..."):
+        with st.spinner("Drawing trajectory & rendering..."):
             
-            # Ensure tracer animation completes before video cuts off
             remaining_frames = total_frames - (impact_frame - 1)
             requested_duration_frames = int(fps * tracer_speed)
             flight_duration = max(5, min(requested_duration_frames, remaining_frames))
 
-            # Exact Lagrange Polynomial Interpolation
             t_steps = np.linspace(0.0, 1.0, flight_duration)
             curve_points = []
 
@@ -257,7 +277,6 @@ if uploaded_file:
                     if pts_count > 1:
                         active_pts = np.array(curve_points[:pts_count], dtype=np.int32)
                         
-                        # Solid Tracer Line
                         cv2.polylines(
                             f,
                             [active_pts],
@@ -266,7 +285,6 @@ if uploaded_file:
                             thickness=5,
                             lineType=cv2.LINE_AA,
                         )
-                        # Ball Head
                         cv2.circle(
                             f,
                             curve_points[pts_count - 1],

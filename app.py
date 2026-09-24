@@ -8,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 st.set_page_config(
-    page_title="Golf Tracer", 
+    page_title="Golf Tracer (3-Tap)", 
     page_icon="⛳",
     layout="centered"
 )
@@ -23,17 +23,15 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("⛳ Visual Golf Tracer")
+st.title("⛳ 3-Tap Golf Tracer")
 
 uploaded_file = st.file_uploader("Upload Golf Swing", type=["mp4", "mov", "avi"])
 
 if uploaded_file:
-    # 1. Save uploaded file
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     tfile.write(uploaded_file.read())
     video_path = tfile.name
 
-    # Read video properties
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
@@ -45,14 +43,13 @@ if uploaded_file:
     aspect_ratio = height / width
     DISPLAY_HEIGHT = int(DISPLAY_WIDTH * aspect_ratio)
 
-    # Base64 Encode video
     with open(video_path, "rb") as vf:
         video_bytes = vf.read()
     
     b64_video = base64.b64encode(video_bytes).decode('utf-8')
     video_data_url = f"data:video/mp4;base64,{b64_video}"
 
-    # HTML5 Scrubber with iOS & Touch Optimizations
+    # HTML Canvas with 3-Point Sequential Tap
     custom_scrubber_html = f"""
     <!DOCTYPE html>
     <html>
@@ -66,7 +63,9 @@ if uploaded_file:
             canvas {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }}
             .controls {{ width: {DISPLAY_WIDTH}px; margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }}
             .slider-header {{ display: flex; justify-content: space-between; font-size: 13px; font-weight: 600; color: #444; }}
+            .tap-status {{ font-size: 13px; font-weight: 700; color: #007AFF; text-align: center; margin-top: 4px; }}
             input[type=range] {{ width: 100%; accent-color: #007AFF; height: 28px; cursor: pointer; }}
+            .reset-btn {{ background: #e5e5ea; border: none; padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; align-self: center; }}
         </style>
     </head>
     <body>
@@ -84,17 +83,23 @@ if uploaded_file:
                 <span id="frameText">Frame 1 / {total_frames}</span>
             </div>
             <input type="range" id="scrubber" min="0" max="{total_frames - 1}" value="0" step="1">
+            <div id="tapStatus" class="tap-status">Tap 1/3: Select START / IMPACT point</div>
+            <button class="reset-btn" onclick="resetPoints()">Reset Points</button>
         </div>
 
         <script>
             const video = document.getElementById('vPlayer');
             const scrubber = document.getElementById('scrubber');
             const frameText = document.getElementById('frameText');
+            const tapStatus = document.getElementById('tapStatus');
             const canvas = document.getElementById('overlayCanvas');
             const ctx = canvas.getContext('2d');
 
             const totalFrames = {total_frames};
             const fps = {fps};
+            const scale = {width} / {DISPLAY_WIDTH};
+
+            let points = [];
 
             video.load();
             video.currentTime = 0;
@@ -106,82 +111,114 @@ if uploaded_file:
             }});
 
             canvas.addEventListener('pointerdown', (e) => {{
+                if (points.length >= 3) return;
+
                 const rect = canvas.getBoundingClientRect();
                 const x = e.clientX - rect.left;
                 const y = e.clientY - rect.top;
-                drawTarget(x, y);
+
+                // Scale to full video dimensions
+                const realX = Math.round(x * scale);
+                const realY = Math.round(y * scale);
+
+                points.push({{ dispX: x, dispY: y, realX: realX, realY: realY }});
+                redraw();
+                updateStatus();
             }});
 
-            function drawTarget(x, y) {{
+            function resetPoints() {{
+                points = [];
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                updateStatus();
+            }}
+
+            function updateStatus() {{
+                if (points.length === 0) {{
+                    tapStatus.innerText = "Tap 1/3: Select START / IMPACT point";
+                    tapStatus.style.color = "#007AFF";
+                }} else if (points.length === 1) {{
+                    tapStatus.innerText = "Tap 2/3: Select APEX (highest) point";
+                    tapStatus.style.color = "#FF9500";
+                }} else if (points.length === 2) {{
+                    tapStatus.innerText = "Tap 3/3: Select LANDING / END point";
+                    tapStatus.style.color = "#34C759";
+                }} else {{
+                    tapStatus.innerText = "✅ All 3 Points Set! Scroll down to render.";
+                    tapStatus.style.color = "#34C759";
+                }}
+            }}
+
+            function redraw() {{
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
                 
-                ctx.beginPath();
-                ctx.arc(x, y, 10, 0, 2 * Math.PI);
-                ctx.strokeStyle = '#FF3B30';
-                ctx.lineWidth = 3;
-                ctx.stroke();
+                const colors = ['#007AFF', '#FF9500', '#34C759'];
+                const labels = ['1: Start', '2: Apex', '3: End'];
 
-                ctx.beginPath();
-                ctx.moveTo(x - 16, y); ctx.lineTo(x + 16, y);
-                ctx.moveTo(x, y - 16); ctx.lineTo(x, y + 16);
-                ctx.strokeStyle = '#FF3B30';
-                ctx.lineWidth = 2;
-                ctx.stroke();
+                // Draw Dots
+                points.forEach((p, idx) => {{
+                    ctx.beginPath();
+                    ctx.arc(p.dispX, p.dispY, 7, 0, 2 * Math.PI);
+                    ctx.fillStyle = colors[idx];
+                    ctx.fill();
+                    ctx.lineWidth = 2;
+                    ctx.strokeStyle = '#FFFFFF';
+                    ctx.stroke();
 
-                ctx.beginPath();
-                ctx.arc(x, y, 3, 0, 2 * Math.PI);
-                ctx.fillStyle = '#FFFFFF';
-                ctx.fill();
+                    ctx.font = '11px sans-serif';
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.fillText(labels[idx], p.dispX + 10, p.dispY + 4);
+                }});
+
+                // Draw preview curve if all 3 points selected
+                if (points.length === 3) {{
+                    ctx.beginPath();
+                    ctx.moveTo(points[0].dispX, points[0].dispY);
+                    ctx.quadraticCurveTo(points[1].dispX, points[1].dispY, points[2].dispX, points[2].dispY);
+                    ctx.strokeStyle = '#34C759';
+                    ctx.lineWidth = 3;
+                    ctx.setLineDash([4, 4]);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }}
             }}
         </script>
     </body>
     </html>
     """
 
-    components.html(custom_scrubber_html, height=DISPLAY_HEIGHT + 75)
+    components.html(custom_scrubber_html, height=DISPLAY_HEIGHT + 115)
 
     st.markdown("---")
-    st.subheader("🎯 Trajectory Controls")
+    st.subheader("⚙️ Render Settings")
 
-    # Impact Frame and Starting Position
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
-        cx = st.number_input("Start X", min_value=0, max_value=width, value=int(width * 0.5))
+        impact_frame = st.number_input("Impact Frame", min_value=1, max_value=total_frames, value=60)
     with col2:
-        cy = st.number_input("Start Y", min_value=0, max_value=height, value=int(height * 0.75))
-    with col3:
-        impact_frame = st.number_input("Impact Frame", min_value=1, max_value=total_frames, value=1)
+        tracer_speed = st.slider("Flight Duration (sec)", min_value=0.5, max_value=3.0, value=1.5, step=0.1)
 
-    # Flight Shape Customization
-    st.caption("Adjust Flight Direction & Shape:")
-    col_a, col_b = st.columns(2)
-    with col_a:
-        horizontal_direction = st.slider("Direction (Left ◄ ► Right)", min_value=-int(width * 0.4), max_value=int(width * 0.4), value=0, step=5)
-        apex_height_pct = st.slider("Apex Height", min_value=5, max_value=50, value=20, step=1)
-    with col_b:
-        curve_bend = st.slider("Curve (Draw ◄ ► Fade)", min_value=-int(width * 0.2), max_value=int(width * 0.2), value=0, step=5)
-        flight_time_sec = st.slider("Tracer Duration (s)", min_value=0.5, max_value=3.0, value=1.5, step=0.1)
+    # Coords Input fallback / fine tuning
+    st.caption("Coordinate Inputs (Auto-filled by tapping above):")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        x0 = st.number_input("Start X", value=int(width * 0.5))
+        y0 = st.number_input("Start Y", value=int(height * 0.75))
+    with c2:
+        x1 = st.number_input("Apex X", value=int(width * 0.45))
+        y1 = st.number_input("Apex Y", value=int(height * 0.25))
+    with c3:
+        x2 = st.number_input("End X", value=int(width * 0.42))
+        y2 = st.number_input("End Y", value=int(height * 0.40))
 
-    if st.button("🚀 Render Custom Flight Tracer", type="primary", use_container_width=True):
-        with st.spinner("Processing flight parabola & rendering video..."):
-            flight_duration = int(fps * flight_time_sec)
+    if st.button("🚀 Render 3-Tap Tracer", type="primary", use_container_width=True):
+        with st.spinner("Drawing parabolic trajectory & rendering..."):
+            flight_duration = int(fps * tracer_speed)
 
-            # Dynamic Path Calculation
-            # Start Point
-            p0 = np.array([cx, cy])
+            p0 = np.array([x0, y0])
+            p1 = np.array([x1, y1])
+            p2 = np.array([x2, y2])
 
-            # Landing Point (Target end location based on horizontal direction slider)
-            landing_x = int(cx + horizontal_direction)
-            landing_y = int(cy - (height * 0.35))
-            p2 = np.array([landing_x, landing_y])
-
-            # Apex Point (Midpoint height + Draw/Fade curve bend)
-            mid_x = (cx + landing_x) / 2
-            apex_x = int(mid_x + curve_bend)
-            apex_y = int(cy - (height * (apex_height_pct / 100.0)))
-            p1 = np.array([apex_x, apex_y])
-
-            # Quadratic Bezier Curve Math
+            # Quadratic Bezier fit across 3 points
             t = np.linspace(0, 1, flight_duration)
             curve_points = [
                 (
@@ -209,7 +246,7 @@ if uploaded_file:
                     if pts_count > 1:
                         active_pts = np.array(curve_points[:pts_count], dtype=np.int32)
                         
-                        # Draw Neon Green Tracer Line
+                        # Solid Tracer Line
                         cv2.polylines(
                             f,
                             [active_pts],
@@ -218,7 +255,7 @@ if uploaded_file:
                             thickness=5,
                             lineType=cv2.LINE_AA,
                         )
-                        # Draw White Leading Edge Ball Head
+                        # Ball Head
                         cv2.circle(
                             f,
                             curve_points[pts_count - 1],
@@ -234,7 +271,6 @@ if uploaded_file:
             cap.release()
             out.release()
 
-            # Transcode video for mobile web playback
             web_temp = tempfile.NamedTemporaryFile(delete=False, suffix="_web.mp4")
             cmd = [
                 "ffmpeg",

@@ -1,7 +1,5 @@
 streamlit
 opencv-python-headless
-ultralytics
-filterpy
 numpy
-scipy
-imageio-ffmpeg
+ffmpeg-python
+streamlit-image-coordinates

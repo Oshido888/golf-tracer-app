@@ -49,7 +49,7 @@ if uploaded_file:
     b64_video = base64.b64encode(video_bytes).decode('utf-8')
     video_data_url = f"data:video/mp4;base64,{b64_video}"
 
-    # HTML Canvas with 3-Point Sequential Tap
+    # HTML Canvas with 3-Point Sequential Tap Preview matching Lagrange Curve
     custom_scrubber_html = f"""
     <!DOCTYPE html>
     <html>
@@ -170,7 +170,7 @@ if uploaded_file:
                 if (points.length === 3) {{
                     ctx.beginPath();
                     
-                    // Preview curve matching Lagrange polynomial
+                    // Exact Lagrange Polynomial Preview
                     for (let t = 0; t <= 1; t += 0.02) {{
                         let L0 = ((t - 0.5) * (t - 1.0)) / ((0.0 - 0.5) * (0.0 - 1.0));
                         let L1 = ((t - 0.0) * (t - 1.0)) / ((0.5 - 0.0) * (0.5 - 1.0));
@@ -221,12 +221,12 @@ if uploaded_file:
     if st.button("🚀 Render 3-Tap Tracer", type="primary", use_container_width=True):
         with st.spinner("Drawing parabolic trajectory & rendering..."):
             
-            # Ensure the tracer finishes before video end frame
+            # Ensure tracer animation completes before video cuts off
             remaining_frames = total_frames - (impact_frame - 1)
             requested_duration_frames = int(fps * tracer_speed)
             flight_duration = max(5, min(requested_duration_frames, remaining_frames))
 
-            # Lagrange Polynomial Interpolation
+            # Exact Lagrange Polynomial Interpolation
             t_steps = np.linspace(0.0, 1.0, flight_duration)
             curve_points = []
 

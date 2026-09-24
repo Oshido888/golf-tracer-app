@@ -28,12 +28,12 @@ st.title("⛳ Visual Golf Tracer")
 uploaded_file = st.file_uploader("Upload Golf Swing", type=["mp4", "mov", "avi"])
 
 if uploaded_file:
-    # 1. Save uploaded file to temp path
+    # 1. Save uploaded file
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     tfile.write(uploaded_file.read())
     video_path = tfile.name
 
-    # Read video metadata
+    # Read video properties
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
@@ -45,77 +45,28 @@ if uploaded_file:
     aspect_ratio = height / width
     DISPLAY_HEIGHT = int(DISPLAY_WIDTH * aspect_ratio)
 
-    # Convert video bytes to base64 with web-compatible chunking
+    # Base64 Encode video
     with open(video_path, "rb") as vf:
         video_bytes = vf.read()
     
     b64_video = base64.b64encode(video_bytes).decode('utf-8')
     video_data_url = f"data:video/mp4;base64,{b64_video}"
 
-    # HTML5 Scrubber with iOS Webkit Optimizations
+    # HTML5 Scrubber with iOS & Touch Optimizations
     custom_scrubber_html = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
         <style>
-            * {{
-                -webkit-tap-highlight-color: transparent;
-                box-sizing: border-box;
-            }}
-            body {{
-                margin: 0;
-                padding: 0;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                background: transparent;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-            }}
-            .video-container {{
-                position: relative;
-                width: {DISPLAY_WIDTH}px;
-                height: {DISPLAY_HEIGHT}px;
-                border-radius: 12px;
-                overflow: hidden;
-                background: #000;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            }}
-            video {{
-                width: 100%;
-                height: 100%;
-                object-fit: contain;
-                display: block;
-            }}
-            canvas {{
-                position: absolute;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                cursor: crosshair;
-                touch-action: none;
-            }}
-            .controls {{
-                width: {DISPLAY_WIDTH}px;
-                margin-top: 10px;
-                display: flex;
-                flex-direction: column;
-                gap: 6px;
-            }}
-            .slider-header {{
-                display: flex;
-                justify-content: space-between;
-                font-size: 13px;
-                font-weight: 600;
-                color: #444;
-            }}
-            input[type=range] {{
-                width: 100%;
-                accent-color: #007AFF;
-                height: 28px;
-                cursor: pointer;
-            }}
+            * {{ -webkit-tap-highlight-color: transparent; box-sizing: border-box; }}
+            body {{ margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: transparent; display: flex; flex-direction: column; align-items: center; }}
+            .video-container {{ position: relative; width: {DISPLAY_WIDTH}px; height: {DISPLAY_HEIGHT}px; border-radius: 12px; overflow: hidden; background: #000; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }}
+            video {{ width: 100%; height: 100%; object-fit: contain; display: block; }}
+            canvas {{ position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }}
+            .controls {{ width: {DISPLAY_WIDTH}px; margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }}
+            .slider-header {{ display: flex; justify-content: space-between; font-size: 13px; font-weight: 600; color: #444; }}
+            input[type=range] {{ width: 100%; accent-color: #007AFF; height: 28px; cursor: pointer; }}
         </style>
     </head>
     <body>
@@ -145,7 +96,6 @@ if uploaded_file:
             const totalFrames = {total_frames};
             const fps = {fps};
 
-            // Force mobile Safari to load frame 0 metadata
             video.load();
             video.currentTime = 0;
 
@@ -165,24 +115,19 @@ if uploaded_file:
             function drawTarget(x, y) {{
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
                 
-                // Red Outer Circle
                 ctx.beginPath();
                 ctx.arc(x, y, 10, 0, 2 * Math.PI);
                 ctx.strokeStyle = '#FF3B30';
                 ctx.lineWidth = 3;
                 ctx.stroke();
 
-                // Crosshairs
                 ctx.beginPath();
-                ctx.moveTo(x - 16, y);
-                ctx.lineTo(x + 16, y);
-                ctx.moveTo(x, y - 16);
-                ctx.lineTo(x, y + 16);
+                ctx.moveTo(x - 16, y); ctx.lineTo(x + 16, y);
+                ctx.moveTo(x, y - 16); ctx.lineTo(x, y + 16);
                 ctx.strokeStyle = '#FF3B30';
                 ctx.lineWidth = 2;
                 ctx.stroke();
 
-                // Center White Dot
                 ctx.beginPath();
                 ctx.arc(x, y, 3, 0, 2 * Math.PI);
                 ctx.fillStyle = '#FFFFFF';
@@ -196,28 +141,47 @@ if uploaded_file:
     components.html(custom_scrubber_html, height=DISPLAY_HEIGHT + 75)
 
     st.markdown("---")
-    st.subheader("🎯 Target Settings")
+    st.subheader("🎯 Trajectory Controls")
 
+    # Impact Frame and Starting Position
     col1, col2, col3 = st.columns(3)
     with col1:
-        cx = st.number_input("Target X", min_value=0, max_value=width, value=int(width * 0.5))
+        cx = st.number_input("Start X", min_value=0, max_value=width, value=int(width * 0.5))
     with col2:
-        cy = st.number_input("Target Y", min_value=0, max_value=height, value=int(height * 0.7))
+        cy = st.number_input("Start Y", min_value=0, max_value=height, value=int(height * 0.75))
     with col3:
         impact_frame = st.number_input("Impact Frame", min_value=1, max_value=total_frames, value=1)
 
-    if st.button("🚀 Render Flight Tracer", type="primary", use_container_width=True):
-        with st.spinner("Processing flight curve & rendering video..."):
-            flight_duration = int(fps * 1.5)
-            apex_x = int(cx - (width * 0.12))
-            apex_y = int(height * 0.22)
-            landing_x = int(apex_x - (width * 0.05))
-            landing_y = int(height * 0.45)
+    # Flight Shape Customization
+    st.caption("Adjust Flight Direction & Shape:")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        horizontal_direction = st.slider("Direction (Left ◄ ► Right)", min_value=-int(width * 0.4), max_value=int(width * 0.4), value=0, step=5)
+        apex_height_pct = st.slider("Apex Height", min_value=5, max_value=50, value=20, step=1)
+    with col_b:
+        curve_bend = st.slider("Curve (Draw ◄ ► Fade)", min_value=-int(width * 0.2), max_value=int(width * 0.2), value=0, step=5)
+        flight_time_sec = st.slider("Tracer Duration (s)", min_value=0.5, max_value=3.0, value=1.5, step=0.1)
 
+    if st.button("🚀 Render Custom Flight Tracer", type="primary", use_container_width=True):
+        with st.spinner("Processing flight parabola & rendering video..."):
+            flight_duration = int(fps * flight_time_sec)
+
+            # Dynamic Path Calculation
+            # Start Point
             p0 = np.array([cx, cy])
-            p1 = np.array([apex_x, apex_y])
+
+            # Landing Point (Target end location based on horizontal direction slider)
+            landing_x = int(cx + horizontal_direction)
+            landing_y = int(cy - (height * 0.35))
             p2 = np.array([landing_x, landing_y])
 
+            # Apex Point (Midpoint height + Draw/Fade curve bend)
+            mid_x = (cx + landing_x) / 2
+            apex_x = int(mid_x + curve_bend)
+            apex_y = int(cy - (height * (apex_height_pct / 100.0)))
+            p1 = np.array([apex_x, apex_y])
+
+            # Quadratic Bezier Curve Math
             t = np.linspace(0, 1, flight_duration)
             curve_points = [
                 (
@@ -244,18 +208,21 @@ if uploaded_file:
 
                     if pts_count > 1:
                         active_pts = np.array(curve_points[:pts_count], dtype=np.int32)
+                        
+                        # Draw Neon Green Tracer Line
                         cv2.polylines(
                             f,
                             [active_pts],
                             isClosed=False,
                             color=(0, 255, 0),
-                            thickness=4,
+                            thickness=5,
                             lineType=cv2.LINE_AA,
                         )
+                        # Draw White Leading Edge Ball Head
                         cv2.circle(
                             f,
                             curve_points[pts_count - 1],
-                            6,
+                            7,
                             (255, 255, 255),
                             -1,
                             cv2.LINE_AA,
@@ -267,6 +234,7 @@ if uploaded_file:
             cap.release()
             out.release()
 
+            # Transcode video for mobile web playback
             web_temp = tempfile.NamedTemporaryFile(delete=False, suffix="_web.mp4")
             cmd = [
                 "ffmpeg",

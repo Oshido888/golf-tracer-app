@@ -117,7 +117,6 @@ if uploaded_file:
                 const x = e.clientX - rect.left;
                 const y = e.clientY - rect.top;
 
-                // Scale to full video dimensions
                 const realX = Math.round(x * scale);
                 const realY = Math.round(y * scale);
 
@@ -154,7 +153,6 @@ if uploaded_file:
                 const colors = ['#007AFF', '#FF9500', '#34C759'];
                 const labels = ['1: Start', '2: Apex', '3: End'];
 
-                // Draw Dots
                 points.forEach((p, idx) => {{
                     ctx.beginPath();
                     ctx.arc(p.dispX, p.dispY, 7, 0, 2 * Math.PI);
@@ -169,11 +167,22 @@ if uploaded_file:
                     ctx.fillText(labels[idx], p.dispX + 10, p.dispY + 4);
                 }});
 
-                // Draw preview curve if all 3 points selected
                 if (points.length === 3) {{
                     ctx.beginPath();
-                    ctx.moveTo(points[0].dispX, points[0].dispY);
-                    ctx.quadraticCurveTo(points[1].dispX, points[1].dispY, points[2].dispX, points[2].dispY);
+                    
+                    // Preview curve matching Lagrange polynomial
+                    for (let t = 0; t <= 1; t += 0.02) {{
+                        let L0 = ((t - 0.5) * (t - 1.0)) / ((0.0 - 0.5) * (0.0 - 1.0));
+                        let L1 = ((t - 0.0) * (t - 1.0)) / ((0.5 - 0.0) * (0.5 - 1.0));
+                        let L2 = ((t - 0.0) * (t - 0.5)) / ((1.0 - 0.0) * (1.0 - 0.5));
+
+                        let px = L0 * points[0].dispX + L1 * points[1].dispX + L2 * points[2].dispX;
+                        let py = L0 * points[0].dispY + L1 * points[1].dispY + L2 * points[2].dispY;
+
+                        if (t === 0) ctx.moveTo(px, py);
+                        else ctx.lineTo(px, py);
+                    }}
+
                     ctx.strokeStyle = '#34C759';
                     ctx.lineWidth = 3;
                     ctx.setLineDash([4, 4]);
@@ -193,11 +202,10 @@ if uploaded_file:
 
     col1, col2 = st.columns(2)
     with col1:
-        impact_frame = st.number_input("Impact Frame", min_value=1, max_value=total_frames, value=60)
+        impact_frame = st.number_input("Impact Frame", min_value=1, max_value=total_frames, value=100)
     with col2:
         tracer_speed = st.slider("Flight Duration (sec)", min_value=0.5, max_value=3.0, value=1.5, step=0.1)
 
-    # Coords Input fallback / fine tuning
     st.caption("Coordinate Inputs (Auto-filled by tapping above):")
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -212,21 +220,24 @@ if uploaded_file:
 
     if st.button("🚀 Render 3-Tap Tracer", type="primary", use_container_width=True):
         with st.spinner("Drawing parabolic trajectory & rendering..."):
-            flight_duration = int(fps * tracer_speed)
+            
+            # Ensure the tracer finishes before video end frame
+            remaining_frames = total_frames - (impact_frame - 1)
+            requested_duration_frames = int(fps * tracer_speed)
+            flight_duration = max(5, min(requested_duration_frames, remaining_frames))
 
-            p0 = np.array([x0, y0])
-            p1 = np.array([x1, y1])
-            p2 = np.array([x2, y2])
+            # Lagrange Polynomial Interpolation
+            t_steps = np.linspace(0.0, 1.0, flight_duration)
+            curve_points = []
 
-            # Quadratic Bezier fit across 3 points
-            t = np.linspace(0, 1, flight_duration)
-            curve_points = [
-                (
-                    int((1 - ti) ** 2 * p0[0] + 2 * (1 - ti) * ti * p1[0] + ti**2 * p2[0]),
-                    int((1 - ti) ** 2 * p0[1] + 2 * (1 - ti) * ti * p1[1] + ti**2 * p2[1]),
-                )
-                for ti in t
-            ]
+            for t in t_steps:
+                L0 = ((t - 0.5) * (t - 1.0)) / ((0.0 - 0.5) * (0.0 - 1.0))
+                L1 = ((t - 0.0) * (t - 1.0)) / ((0.5 - 0.0) * (0.5 - 1.0))
+                L2 = ((t - 0.0) * (t - 0.5)) / ((1.0 - 0.0) * (1.0 - 0.5))
+
+                curr_x = int(L0 * x0 + L1 * x1 + L2 * x2)
+                curr_y = int(L0 * y0 + L1 * y1 + L2 * y2)
+                curve_points.append((curr_x, curr_y))
 
             cap = cv2.VideoCapture(video_path)
             raw_temp = tempfile.NamedTemporaryFile(delete=False, suffix="_raw.mp4")

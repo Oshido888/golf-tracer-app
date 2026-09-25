@@ -256,7 +256,7 @@ if uploaded_file:
         y2 = st.number_input("End Y", value=default_y2)
 
     if st.button("🚀 Render 3-Tap Tracer", type="primary", use_container_width=True):
-        with st.spinner("Rendering tracer synced to frame timestamps..."):
+        with st.spinner("Rendering tracer synced to frame timestamps with audio..."):
             
             flight_duration = calculated_frames
 
@@ -314,15 +314,18 @@ if uploaded_file:
             out.release()
 
             web_temp = tempfile.NamedTemporaryFile(delete=False, suffix="_web.mp4")
+            
+            # FFmpeg Command merging rendered video (Input 0) with original audio (Input 1)
             cmd = [
                 "ffmpeg",
                 "-y",
-                "-i",
-                raw_temp.name,
-                "-vcodec",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
+                "-i", raw_temp.name,   # Input 0: Visual frames with tracer
+                "-i", video_path,       # Input 1: Original video with audio stream
+                "-map", "0:v:0",        # Select visual stream from rendered frames
+                "-map", "1:a:0?",       # Select audio stream from original clip (optional if missing)
+                "-c:v", "libx264",
+                "-c:a", "copy",         # Pass original audio through without re-encoding
+                "-pix_fmt", "yuv420p",
                 web_temp.name,
             ]
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

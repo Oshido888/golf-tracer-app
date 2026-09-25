@@ -43,7 +43,7 @@ if uploaded_file:
     aspect_ratio = height / width
     DISPLAY_HEIGHT = int(DISPLAY_WIDTH * aspect_ratio)
 
-    # Check query parameters for tapped coordinates passed back from JS
+    # Read query parameters passed from JavaScript
     query_params = st.query_params
     
     default_x0 = int(query_params.get("x0", int(width * 0.5)))
@@ -53,13 +53,16 @@ if uploaded_file:
     default_x2 = int(query_params.get("x2", int(width * 0.42)))
     default_y2 = int(query_params.get("y2", int(height * 0.40)))
 
+    # Frame timing captured from taps
+    default_start_frame = int(query_params.get("f0", 1))
+    default_end_frame = int(query_params.get("f2", min(default_start_frame + int(fps * 1.5), total_frames)))
+
     with open(video_path, "rb") as vf:
         video_bytes = vf.read()
     
     b64_video = base64.b64encode(video_bytes).decode('utf-8')
     video_data_url = f"data:video/mp4;base64,{b64_video}"
 
-    # HTML Canvas with JavaScript-to-Streamlit URL Parameter Sync
     custom_scrubber_html = f"""
     <!DOCTYPE html>
     <html>
@@ -93,7 +96,7 @@ if uploaded_file:
                 <span id="frameText">Frame 1 / {total_frames}</span>
             </div>
             <input type="range" id="scrubber" min="0" max="{total_frames - 1}" value="0" step="1">
-            <div id="tapStatus" class="tap-status">Tap 1/3: Select START / IMPACT point</div>
+            <div id="tapStatus" class="tap-status">Tap 1/3: Scrub to IMPACT frame & tap ball</div>
             <button class="reset-btn" onclick="resetPoints()">Reset Points</button>
         </div>
 
@@ -110,14 +113,15 @@ if uploaded_file:
             const scale = {width} / {DISPLAY_WIDTH};
 
             let points = [];
+            let currentFrameIdx = 0;
 
             video.load();
             video.currentTime = 0;
 
             scrubber.addEventListener('input', (e) => {{
-                const frameIdx = parseInt(e.target.value);
-                video.currentTime = frameIdx / fps;
-                frameText.innerText = 'Frame ' + (frameIdx + 1) + ' / ' + totalFrames;
+                currentFrameIdx = parseInt(e.target.value);
+                video.currentTime = currentFrameIdx / fps;
+                frameText.innerText = 'Frame ' + (currentFrameIdx + 1) + ' / ' + totalFrames;
             }});
 
             canvas.addEventListener('pointerdown', (e) => {{
@@ -129,8 +133,9 @@ if uploaded_file:
 
                 const realX = Math.round(x * scale);
                 const realY = Math.round(y * scale);
+                const frameNum = currentFrameIdx + 1;
 
-                points.push({{ dispX: x, dispY: y, realX: realX, realY: realY }});
+                points.push({{ dispX: x, dispY: y, realX: realX, realY: realY, frame: frameNum }});
                 redraw();
                 updateStatus();
 
@@ -143,10 +148,16 @@ if uploaded_file:
                 const url = new URL(window.parent.location.href);
                 url.searchParams.set('x0', points[0].realX);
                 url.searchParams.set('y0', points[0].realY);
+                url.searchParams.set('f0', points[0].frame);
+
                 url.searchParams.set('x1', points[1].realX);
                 url.searchParams.set('y1', points[1].realY);
+                url.searchParams.set('f1', points[1].frame);
+
                 url.searchParams.set('x2', points[2].realX);
                 url.searchParams.set('y2', points[2].realY);
+                url.searchParams.set('f2', points[2].frame);
+
                 window.parent.history.replaceState({{}}, '', url.toString());
             }}
 
@@ -158,16 +169,16 @@ if uploaded_file:
 
             function updateStatus() {{
                 if (points.length === 0) {{
-                    tapStatus.innerText = "Tap 1/3: Select START / IMPACT point";
+                    tapStatus.innerText = "Tap 1/3: Scrub to IMPACT frame & tap ball";
                     tapStatus.style.color = "#007AFF";
                 }} else if (points.length === 1) {{
-                    tapStatus.innerText = "Tap 2/3: Select APEX (highest) point";
+                    tapStatus.innerText = "Tap 2/3: Scrub to APEX frame & tap peak";
                     tapStatus.style.color = "#FF9500";
                 }} else if (points.length === 2) {{
-                    tapStatus.innerText = "Tap 3/3: Select LANDING / END point";
+                    tapStatus.innerText = "Tap 3/3: Scrub to LANDING frame & tap end";
                     tapStatus.style.color = "#34C759";
                 }} else {{
-                    tapStatus.innerText = "✅ Points Synced! Scroll down and click Render.";
+                    tapStatus.innerText = "✅ Synced! Impact Frame: " + points[0].frame + " | End Frame: " + points[2].frame;
                     tapStatus.style.color = "#34C759";
                 }}
             }}
@@ -189,7 +200,7 @@ if uploaded_file:
 
                     ctx.font = '11px sans-serif';
                     ctx.fillStyle = '#FFFFFF';
-                    ctx.fillText(labels[idx], p.dispX + 10, p.dispY + 4);
+                    ctx.fillText(labels[idx] + ' (F' + p.frame + ')', p.dispX + 10, p.dispY + 4);
                 }});
 
                 if (points.length === 3) {{
@@ -220,15 +231,19 @@ if uploaded_file:
     components.html(custom_scrubber_html, height=DISPLAY_HEIGHT + 115)
 
     st.markdown("---")
-    st.subheader("⚙️ Render Settings")
+    st.subheader("⚙️ Render Timing (Auto-Synced)")
 
     col1, col2 = st.columns(2)
     with col1:
-        impact_frame = st.number_input("Impact Frame", min_value=1, max_value=total_frames, value=100)
+        impact_frame = st.number_input("Impact Frame (Tap 1)", min_value=1, max_value=total_frames, value=default_start_frame)
     with col2:
-        tracer_speed = st.slider("Flight Duration (sec)", min_value=0.5, max_value=3.0, value=1.5, step=0.1)
+        end_frame = st.number_input("Landing Frame (Tap 3)", min_value=1, max_value=total_frames, value=default_end_frame)
 
-    st.caption("Active Coordinates (Updated on tap):")
+    calculated_frames = max(2, end_frame - impact_frame + 1)
+    calculated_secs = calculated_frames / fps
+    st.info(f"⏱️ **Flight Duration:** {calculated_frames} frames (~{calculated_secs:.2f} seconds @ {fps:.1f} fps)")
+
+    st.caption("Active Coordinates:")
     c1, c2, c3 = st.columns(3)
     with c1:
         x0 = st.number_input("Start X", value=default_x0)
@@ -241,11 +256,9 @@ if uploaded_file:
         y2 = st.number_input("End Y", value=default_y2)
 
     if st.button("🚀 Render 3-Tap Tracer", type="primary", use_container_width=True):
-        with st.spinner("Drawing trajectory & rendering..."):
+        with st.spinner("Rendering tracer synced to frame timestamps..."):
             
-            remaining_frames = total_frames - (impact_frame - 1)
-            requested_duration_frames = int(fps * tracer_speed)
-            flight_duration = max(5, min(requested_duration_frames, remaining_frames))
+            flight_duration = calculated_frames
 
             t_steps = np.linspace(0.0, 1.0, flight_duration)
             curve_points = []

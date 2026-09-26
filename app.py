@@ -231,7 +231,14 @@ if uploaded_file:
     components.html(custom_scrubber_html, height=DISPLAY_HEIGHT + 115)
 
     st.markdown("---")
-    st.subheader("⚙️ Render Timing (Auto-Synced)")
+    st.subheader("🎨 Customization & Timing")
+
+    # Tracer Color Option
+    color_choice = st.radio(
+        "Tracer Color", 
+        ["🟢 Green", "🔴 Red"], 
+        horizontal=True
+    )
 
     col1, col2 = st.columns(2)
     with col1:
@@ -260,21 +267,23 @@ if uploaded_file:
             
             flight_duration = calculated_frames
 
+            # Determine OpenCV BGR Color Schematics
+            if "Red" in color_choice:
+                tracer_bgr = (0, 0, 255)       # Bright Red
+                flash_bgr = (128, 128, 255)    # Light Pink/Red Pulse Ring
+            else:
+                tracer_bgr = (0, 255, 0)       # Bright Green
+                flash_bgr = (0, 255, 255)      # Yellow Pulse Ring
+
             # --- KINEMATIC PHYSICS SPACING MODEL ---
-            # Drag decay coefficient (k): higher = sharper launch burst & more deceleration
             k = 0.85 
-            
-            # Exponential velocity degradation over flight time
             time_steps = np.linspace(0, 1.0, flight_duration)
             velocities = np.exp(-k * time_steps)
-            
-            # Cumulative distance mapping per frame
             cum_distances = np.cumsum(velocities)
             t_steps = (cum_distances - cum_distances[0]) / (cum_distances[-1] - cum_distances[0])
 
             curve_points = []
             for t in t_steps:
-                # Quadratic Bézier spatial position
                 L0 = ((t - 0.5) * (t - 1.0)) / ((0.0 - 0.5) * (0.0 - 1.0))
                 L1 = ((t - 0.0) * (t - 1.0)) / ((0.5 - 0.0) * (0.5 - 1.0))
                 L2 = ((t - 0.0) * (t - 0.5)) / ((1.0 - 0.0) * (1.0 - 0.5))
@@ -306,7 +315,7 @@ if uploaded_file:
                             f,
                             [active_pts],
                             isClosed=False,
-                            color=(0, 255, 0),
+                            color=tracer_bgr,
                             thickness=5,
                             lineType=cv2.LINE_AA,
                         )
@@ -328,7 +337,7 @@ if uploaded_file:
                                 f, 
                                 curve_points[0], 
                                 12 + (elapsed * 2), 
-                                (0, 255, 255), 
+                                flash_bgr, 
                                 2, 
                                 cv2.LINE_AA
                             )
@@ -341,7 +350,6 @@ if uploaded_file:
 
             web_temp = tempfile.NamedTemporaryFile(delete=False, suffix="_web.mp4")
             
-            # FFmpeg Command merging rendered video (Input 0) with original audio (Input 1)
             cmd = [
                 "ffmpeg",
                 "-y",
@@ -356,7 +364,6 @@ if uploaded_file:
             ]
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-            # Cleanup raw temp file
             if os.path.exists(raw_temp.name):
                 os.remove(raw_temp.name)
 

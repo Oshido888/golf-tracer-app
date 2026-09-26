@@ -43,7 +43,6 @@ if uploaded_file:
     aspect_ratio = height / width
     DISPLAY_HEIGHT = int(DISPLAY_WIDTH * aspect_ratio)
 
-    # Read query parameters passed from JavaScript
     query_params = st.query_params
     
     default_x0 = int(query_params.get("x0", int(width * 0.5)))
@@ -53,7 +52,6 @@ if uploaded_file:
     default_x2 = int(query_params.get("x2", int(width * 0.42)))
     default_y2 = int(query_params.get("y2", int(height * 0.40)))
 
-    # Frame timing captured from taps
     default_start_frame = int(query_params.get("f0", 1))
     default_end_frame = int(query_params.get("f2", min(default_start_frame + int(fps * 1.5), total_frames)))
 
@@ -233,11 +231,20 @@ if uploaded_file:
     st.markdown("---")
     st.subheader("🎨 Customization & Timing")
 
-    # Tracer Color Option
     color_choice = st.radio(
         "Tracer Color", 
         ["🟢 Green", "🔴 Red"], 
         horizontal=True
+    )
+
+    # Launch Burst Slider (Controls initial velocity multiplier)
+    launch_burst = st.slider(
+        "🚀 Launch Burst Intensity", 
+        min_value=1.0, 
+        max_value=3.5, 
+        value=2.2, 
+        step=0.1,
+        help="Higher values make the ball shoot out much faster in the first 5 frames."
     )
 
     col1, col2 = st.columns(2)
@@ -263,20 +270,19 @@ if uploaded_file:
         y2 = st.number_input("End Y", value=default_y2)
 
     if st.button("🚀 Render 3-Tap Tracer", type="primary", use_container_width=True):
-        with st.spinner("Rendering tracer with kinematic physics acceleration..."):
+        with st.spinner("Rendering high-velocity tracer..."):
             
             flight_duration = calculated_frames
 
-            # Determine OpenCV BGR Color Schematics
             if "Red" in color_choice:
-                tracer_bgr = (0, 0, 255)       # Bright Red
-                flash_bgr = (128, 128, 255)    # Light Pink/Red Pulse Ring
+                tracer_bgr = (0, 0, 255)
+                flash_bgr = (128, 128, 255)
             else:
-                tracer_bgr = (0, 255, 0)       # Bright Green
-                flash_bgr = (0, 255, 255)      # Yellow Pulse Ring
+                tracer_bgr = (0, 255, 0)
+                flash_bgr = (0, 255, 255)
 
-            # --- KINEMATIC PHYSICS SPACING MODEL ---
-            k = 0.85 
+            # --- AGGRESSIVE LAUNCH ACCELERATION ---
+            k = launch_burst  # Higher value = faster burst off tee
             time_steps = np.linspace(0, 1.0, flight_duration)
             velocities = np.exp(-k * time_steps)
             cum_distances = np.cumsum(velocities)
@@ -310,7 +316,7 @@ if uploaded_file:
                     if pts_count > 1:
                         active_pts = np.array(curve_points[:pts_count], dtype=np.int32)
                         
-                        # Core Tracer Line
+                        # Core Line
                         cv2.polylines(
                             f,
                             [active_pts],
@@ -320,8 +326,15 @@ if uploaded_file:
                             lineType=cv2.LINE_AA,
                         )
                         
-                        # Leading Ball Head
                         ball_head = curve_points[pts_count - 1]
+
+                        # --- SPEED MOTION STREAK (First 5 frames) ---
+                        if elapsed < 5 and pts_count > 1:
+                            prev_head = curve_points[max(0, pts_count - 3)]
+                            # Thick velocity streak behind ball head
+                            cv2.line(f, ball_head, prev_head, (255, 255, 255), 8, cv2.LINE_AA)
+
+                        # Leading Ball Head Circle
                         cv2.circle(
                             f,
                             ball_head,
@@ -331,14 +344,14 @@ if uploaded_file:
                             cv2.LINE_AA,
                         )
 
-                        # Launch Flash Ring (First 6 frames post-impact)
+                        # Flash Burst Ring at Impact Point
                         if elapsed < 6:
                             cv2.circle(
                                 f, 
                                 curve_points[0], 
-                                12 + (elapsed * 2), 
+                                14 + (elapsed * 3), 
                                 flash_bgr, 
-                                2, 
+                                3, 
                                 cv2.LINE_AA
                             )
 
@@ -353,12 +366,12 @@ if uploaded_file:
             cmd = [
                 "ffmpeg",
                 "-y",
-                "-i", raw_temp.name,   # Input 0: Visual frames with tracer
-                "-i", video_path,       # Input 1: Original video with audio stream
-                "-map", "0:v:0",        # Select visual stream from rendered frames
-                "-map", "1:a:0?",       # Select audio stream from original clip (optional if missing)
+                "-i", raw_temp.name,
+                "-i", video_path,
+                "-map", "0:v:0",
+                "-map", "1:a:0?",
                 "-c:v", "libx264",
-                "-c:a", "copy",         # Pass original audio through without re-encoding
+                "-c:a", "copy",
                 "-pix_fmt", "yuv420p",
                 web_temp.name,
             ]

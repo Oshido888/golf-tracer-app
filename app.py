@@ -256,14 +256,25 @@ if uploaded_file:
         y2 = st.number_input("End Y", value=default_y2)
 
     if st.button("🚀 Render 3-Tap Tracer", type="primary", use_container_width=True):
-        with st.spinner("Rendering tracer synced to frame timestamps with audio..."):
+        with st.spinner("Rendering tracer with kinematic physics acceleration..."):
             
             flight_duration = calculated_frames
 
-            t_steps = np.linspace(0.0, 1.0, flight_duration)
-            curve_points = []
+            # --- KINEMATIC PHYSICS SPACING MODEL ---
+            # Drag decay coefficient (k): higher = sharper launch burst & more deceleration
+            k = 0.85 
+            
+            # Exponential velocity degradation over flight time
+            time_steps = np.linspace(0, 1.0, flight_duration)
+            velocities = np.exp(-k * time_steps)
+            
+            # Cumulative distance mapping per frame
+            cum_distances = np.cumsum(velocities)
+            t_steps = (cum_distances - cum_distances[0]) / (cum_distances[-1] - cum_distances[0])
 
+            curve_points = []
             for t in t_steps:
+                # Quadratic Bézier spatial position
                 L0 = ((t - 0.5) * (t - 1.0)) / ((0.0 - 0.5) * (0.0 - 1.0))
                 L1 = ((t - 0.0) * (t - 1.0)) / ((0.5 - 0.0) * (0.5 - 1.0))
                 L2 = ((t - 0.0) * (t - 0.5)) / ((1.0 - 0.0) * (1.0 - 0.5))
@@ -290,6 +301,7 @@ if uploaded_file:
                     if pts_count > 1:
                         active_pts = np.array(curve_points[:pts_count], dtype=np.int32)
                         
+                        # Core Tracer Line
                         cv2.polylines(
                             f,
                             [active_pts],
@@ -298,14 +310,28 @@ if uploaded_file:
                             thickness=5,
                             lineType=cv2.LINE_AA,
                         )
+                        
+                        # Leading Ball Head
+                        ball_head = curve_points[pts_count - 1]
                         cv2.circle(
                             f,
-                            curve_points[pts_count - 1],
+                            ball_head,
                             7,
                             (255, 255, 255),
                             -1,
                             cv2.LINE_AA,
                         )
+
+                        # Launch Flash Ring (First 6 frames post-impact)
+                        if elapsed < 6:
+                            cv2.circle(
+                                f, 
+                                curve_points[0], 
+                                12 + (elapsed * 2), 
+                                (0, 255, 255), 
+                                2, 
+                                cv2.LINE_AA
+                            )
 
                 out.write(f)
                 curr_idx += 1
@@ -329,5 +355,9 @@ if uploaded_file:
                 web_temp.name,
             ]
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            # Cleanup raw temp file
+            if os.path.exists(raw_temp.name):
+                os.remove(raw_temp.name)
 
             st.video(web_temp.name)
